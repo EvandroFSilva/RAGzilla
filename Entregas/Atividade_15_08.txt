@@ -1,0 +1,21 @@
+O Scrum e o Kanban são abordagens ágeis amplamente utilizadas para organização e gestão de projetos, cada uma com suas 
+características próprias. O Scrum é um framework estruturado, baseado em ciclos curtos e fixos denominados Sprints, 
+geralmente de uma a quatro semanas, nos quais o trabalho é planejado, executado e revisado. Ele possui papéis 
+definidos — Product Owner, responsável por priorizar as entregas; Scrum Master, que garante o cumprimento do 
+método e remove impedimentos; e o Time de Desenvolvimento, que realiza as tarefas de forma autogerida. Entre 
+seus eventos formais estão o Sprint Planning, para planejar o trabalho; o Daily Scrum, reunião diária de 
+alinhamento; o Sprint Review, de apresentação dos resultados; e a Sprint Retrospective, voltada à melhoria 
+contínua. Seus principais artefatos são o Product Backlog (lista de requisitos), o Sprint Backlog 
+(tarefas da iteração) e o incremento de produto, que é o resultado pronto para entrega.
+
+O Kanban, por sua vez, é um método visual de gestão de fluxo de trabalho, caracterizado por sua flexibilidade 
+e pela ausência de ciclos fixos. Ele utiliza um quadro dividido em colunas que representam etapas do 
+processo, permitindo acompanhar visualmente o andamento das tarefas. A aplicação de limites de trabalho 
+em progresso (Work In Progress Limits) evita sobrecarga e mantém o fluxo estável. Seu foco está na melhoria 
+contínua, na eficiência do fluxo e na transparência das regras.
+
+No contexto do Kanban, um exemplo clássico de organização é o quadro com as colunas 
+Backlog → Ready → In Progress → In Review → Done, que estamos utilizando neste projeto. No Backlog, concentram-se todas as ideias, solicitações e tarefas 
+ainda não iniciadas. Em Ready, ficam as atividades já priorizadas e preparadas para execução. In Progress abriga as 
+tarefas em andamento, enquanto In Review contém aquelas finalizadas, mas que aguardam revisão, teste ou aprovação. 
+Por fim, Done reúne as atividades concluídas e efetivamente entregues.
