@@ -1,0 +1,91 @@
+resumo 15.08 vitolaoo
+
+
+SCRUM
+
+What it is: An agile framework for organizing work 
+in short cycles called sprints (usually 1–4 weeks).
+
+Main roles:
+
+* Product Owner – defines priorities and product goals.
+* Scrum Master – ensures the team follows Scrum practices and removes obstacles.
+* Development Team – builds the product.
+* Core events: Sprint Planning, Daily Scrum, Sprint Review, Sprint Retrospective.
+* Goal: Deliver increments of a usable product regularly, adapting as needed.
+
+
+KANBAN
+
+What it is: A visual method for managing work, 
+using a board with columns (e.g., To Do, In Progress, Done).
+
+Key practices:
+
+* Visualize all tasks on the board.
+* Limit the number of tasks “in progress” at once (WIP limits).
+* Focus on continuous flow — no fixed-length sprints.
+* Goal: Improve efficiency by spotting bottlenecks and keeping work moving smoothly.
+
+Main differences:
+
+Scrum = fixed cycles (sprints), specific roles, structured events.
+Kanban = continuous work, flexible roles, focus on flow.
+
+=====================================================================================
+
+Os métodos ágeis são abordagens de gestão e desenvolvimento de projetos que 
+priorizam flexibilidade, colaboração, entrega contínua e adaptação rápida a mudanças. 
+Eles surgiram como alternativa aos modelos tradicionais (como o modelo cascata), 
+que são mais rígidos e sequenciais.
+
+O Manifesto Ágil (2001) estabelece quatro valores principais:
+Indivíduos e interações mais que processos e ferramentas.
+Software funcionando mais que documentação abrangente.
+Colaboração com o cliente mais que negociação de contratos.
+Responder a mudanças mais que seguir um plano.
+Princípios-chave incluem entregas frequentes, comunicação direta, equipes auto-organizadas e melhoria contínua.
+
+2. Scrum
+
+O Scrum é um dos frameworks ágeis mais utilizados, 
+voltado para projetos complexos e com entregas incrementais.
+
+Papel dos times:
+Product Owner (PO): Define e prioriza o backlog do produto.
+Scrum Master (SM): Facilita o processo, remove impedimentos e promove a cultura ágil.
+Time de Desenvolvimento: Autogerenciado, responsável por entregar incrementos funcionais.
+
+Eventos principais:
+
+Sprint (ciclo de 1 a 4 semanas com entregas incrementais).
+Sprint Planning (planejamento da Sprint).
+Daily Scrum (reunião diária de 15 min).
+Sprint Review (apresentação dos resultados).
+Sprint Retrospective (análise de melhorias).
+
+Artefatos:
+Product Backlog: Lista priorizada de requisitos.
+Sprint Backlog: Itens selecionados para a Sprint.
+Incremento: Entrega final de cada Sprint.
+O foco do Scrum está na colaboração, transparência e inspeção contínua.
+
+3. Kanban
+
+O Kanban é uma metodologia visual para gestão de fluxo de trabalho. 
+Tem origem no sistema de produção da Toyota e é amplamente aplicado em equipes ágeis.
+
+Princípios:
+
+Visualizar o trabalho (normalmente usando um quadro com colunas como “A Fazer”, “Em Progresso”, “Concluído”).
+Limitar o WIP (Work in Progress) para evitar sobrecarga.
+Melhorar continuamente o fluxo de entrega.
+
+Vantagens:
+
+Alta flexibilidade (sem sprints fixas).
+Boa visualização do status das tarefas.
+Fácil adaptação a qualquer tipo de projeto.
+
+Aplicação:
+Cada tarefa é representada por um cartão no quadro, que se move conforme avança no processo.
