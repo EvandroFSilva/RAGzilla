@@ -1,0 +1,24 @@
+﻿==== CRONOGRAMA ====
+Data,Semana,Atividade,Critério de Aceite,Artefatos
+05/09/2025,Semana 1,Kickoff + amostragem inicial de documentos e definição de variáveis.,Lista de variáveis aprovada; 30 docs amostrados; plano de anotação definido.,"Documento de escopo, amostra inicial, plano de anotação"
+12/09/2025,Semana 2,Anotação manual das amostras (Step 1) — primeira rodada.,30 docs anotados; guia de anotação validado.,"Dataset anotado (CSV/JSON), guia de anotação"
+19/09/2025,Semana 3,Definição do grid de parâmetros e plano de experimentos.,Tabela de parâmetros e combinações documentada.,"Tabela de configurações, plano de experimentos"
+26/09/2025,Semana 4,Implementação do pré-processamento (extração de texto e chunking).,Chunks gerados reproduzivelmente; documentação do script.,"Código de pré-processamento, logs de teste"
+03/10/2025,Semana 5,Implementação do módulo de embeddings e indexação.,Embeddings gerados para os 30 docs; índice consultável.,"Pipeline de embeddings, índice populado"
+10/10/2025,Semana 6,Implementação do RAG baseline (retriever + prompt template).,Pipeline gera respostas para ≥ 10 queries.,"Pipeline baseline RAG, logs de respostas"
+17/10/2025,Semana 7,Automação da execução em lote (grid de parâmetros).,≥ 10 configurações rodadas automaticamente; resultados persistidos.,"Orquestrador de experimentos, resultados brutos"
+24/10/2025,Semana 8,Implementação da avaliação automática (Step 4).,Métricas calculadas e relatório com ranking das 10 primeiras configs.,"Script de avaliação, relatório inicial"
+31/10/2025,Semana 9,Refinamento de prompt templates e estratégia de recuperação.,Melhoria mensurável para ≥ 1 variável prioritária.,"Novas execuções, relatório comparativo"
+07/11/2025,Semana 10,Validação cruzada dos melhores parâmetros (hold-out).,Análise de estabilidade dos resultados; métricas e curvas por variável.,"Relatório de validação, lista final de melhores parâmetros"
+14/11/2025,Semana 11,"Hardening: integração, testes de performance, documentação técnica.",Documentação suficiente para reproduzir pipeline; benchmarks concluídos.,"Documentação técnica, testes de performance"
+21/11/2025,Semana 12,Preparação de entrega final: relatório preliminar e slides.,"Relatório contendo metodologia, resultados e recomendações; slides prontos.","Relatório preliminar, apresentação de slides"
+28/11/2025,Semana 13,"Entrega final completa (pipeline, dataset, relatório e slides).",Repositório completo; relatório final; amostra funcional entregue.,"Código final, dataset anotado, resultados, relatório PDF, slides"
+
+
+==== WORKFLOW (Steps) ====
+Step,Título,Descrição
+Step 1,Amostragem e Anotação,Seleção de documentos e anotação manual dos valores esperados.
+Step 2,Iteração de Parâmetros,Criação de embeddings com diferentes combinações de chunking e modelos.
+Step 3,Execução RAG,Recuperação dos embeddings mais relevantes e geração de resposta com LLM.
+Step 4,Avaliação,Comparação das respostas com as anotações manuais (correto/incorreto).
+Step 5,Resultados,Seleção das melhores configurações de parâmetros por variável e relatório final.
