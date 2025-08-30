@@ -14,7 +14,7 @@ __pycache__/
 .env.*
 
 # Dados brutos
-project\data
+project/data
 
 # Arquivos temporários do sistema
 .DS_Store
