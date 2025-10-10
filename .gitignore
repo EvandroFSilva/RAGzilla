@@ -15,6 +15,7 @@ __pycache__/
 
 # Dados brutos
 project/data
+project/src/vector_index/
 
 # Arquivos temporários do sistema
 .DS_Store
