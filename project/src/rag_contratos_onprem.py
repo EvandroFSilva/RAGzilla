@@ -59,6 +59,19 @@ def sha1_of_file(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+# -------------------- Extração de entidades --------------------
+def extract_entities(text):
+    """Extrai CNPJs, CPFs, RGs e CEPs do texto."""
+    cnpjs = re.findall(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', text)
+    cpfs  = re.findall(r'\d{3}\.\d{3}\.\d{3}-\d{2}', text)
+    rgs   = re.findall(r'\d{1,2}\.\d{3}\.\d{3}-\d{1}', text)
+    ceps  = re.findall(r'\d{5}-\d{3}', text)
+    return {
+        "cnpjs": list(set(cnpjs)),
+        "cpfs": list(set(cpfs)),
+        "rgs": list(set(rgs)),
+        "ceps": list(set(ceps))
+    }
 
 # -------------------- Extração de texto --------------------
 
@@ -195,11 +208,17 @@ def ingest_all_pdfs(pdf_folder: Path, model: SentenceTransformer):
     ensure_index_dir()
     metadata_items = []
     vectors = []
+    entities_index = {}  # <-- Novo dicionário para armazenar as entidades por documento
 
     for pdf_path in tqdm(list(pdf_folder.glob("*.pdf")), desc="PDFs"):
         doc_id = pdf_path.stem
         file_hash = sha1_of_file(pdf_path)
         text = extract_text_from_pdf(pdf_path)
+
+        # Extrai entidades do documento completo
+        ents = extract_entities(text)
+        entities_index[doc_id] = ents
+
         chunks = smart_chunk(text)
         for i, (chunk_text, start, end) in enumerate(chunks):
             emb = model.encode(chunk_text)
@@ -224,8 +243,13 @@ def ingest_all_pdfs(pdf_folder: Path, model: SentenceTransformer):
     faiss_idx = SimpleFAISSIndex(dim)
     faiss_idx.add(arr, metadata_items)
     faiss_idx.save(INDEX_FILE, METADATA_FILE)
-    print("Index salvo em", INDEX_DIR)
 
+    # Salvar o índice de entidades
+    with open(INDEX_DIR / "entities_index.json", "w", encoding="utf-8") as f:
+        json.dump(entities_index, f, ensure_ascii=False, indent=2)
+
+    print("Index salvo em", INDEX_DIR)
+    print("Índice de entidades salvo em entities_index.json")
 
 # -------------------- Query / RAG --------------------
 
@@ -258,12 +282,43 @@ PROMPT_TEMPLATE_QA = (
 
 
 def query_rag(question: str, model_embed: SentenceTransformer, top_k: int = TOP_K):
+    # 1️⃣ Verifica se a pergunta contém algum identificador conhecido
+    ents = extract_entities(question)
+    entity_hits = sum(len(v) for v in ents.values())
+    
+    if entity_hits > 0:
+        # Carregar índice de entidades
+        entities_path = INDEX_DIR / "entities_index.json"
+        if not entities_path.exists():
+            raise FileNotFoundError("entities_index.json não encontrado. Rode --ingest primeiro.")
+
+        with open(entities_path, "r", encoding="utf-8") as f:
+            entities_index = json.load(f)
+
+        # Procurar o documento que contém o CPF/CNPJ/RG/CEP
+        matched_docs = []
+        for doc_id, data in entities_index.items():
+            for tipo, lista in data.items():
+                for e in lista:
+                    if e in question:
+                        matched_docs.append({"doc_id": doc_id, "entity": e, "type": tipo})
+        
+        if matched_docs:
+            return {
+                "answer": f"Documento(s) encontrado(s) com base no identificador: {matched_docs}",
+                "retrieved": matched_docs
+            }
+
+        # Nenhum documento contém o identificador
+        return {"answer": "Nenhum documento contém o identificador informado.", "retrieved": []}
+
+    # 2️⃣ Caso não haja identificadores, segue o fluxo RAG normal
     idx = load_index()
     qv = model_embed.encode(question).astype('float32')
     import numpy as np
     qv = np.expand_dims(qv, axis=0)
     hits = idx.search(qv, top_k=top_k)
-    # montar contexto
+
     context_items = []
     for h in hits:
         m = h['metadata']
@@ -274,15 +329,18 @@ def query_rag(question: str, model_embed: SentenceTransformer, top_k: int = TOP_
             'text_snippet': m['text_snippet']
         })
 
-    # construir prompt com trechos
-    context_text = "\n\n---\n\n".join([f"DOC:{c['doc_id']}#CHUNK:{c['chunk_index']}\n{c['text_snippet']}" for c in context_items])
-    user_prompt = f"CONTEXT:\n{context_text}\n\nPERGUNTA: {question}\n\nResponda em Português, cite apenas os trechos acima usando doc_id e chunk_index. Se não souber, diga 'Não encontrado'."
+    context_text = "\n\n---\n\n".join(
+        [f"DOC:{c['doc_id']}#CHUNK:{c['chunk_index']}\n{c['text_snippet']}" for c in context_items]
+    )
+
+    user_prompt = (
+        f"CONTEXT:\n{context_text}\n\nPERGUNTA: {question}\n\n"
+        "Responda em Português, cite apenas os trechos acima usando doc_id e chunk_index."
+        " Se não souber, diga 'Não encontrado'."
+    )
     system_prompt = "Assistente jurídico. Cite as fontes (doc_id e chunk_index). Seja sucinto."
     answer = call_openai_chat(system_prompt, user_prompt)
-    return {
-        'answer': answer,
-        'retrieved': context_items
-    }
+    return {'answer': answer, 'retrieved': context_items}
 
 
 # -------------------- CLI --------------------
