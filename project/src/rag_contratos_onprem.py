@@ -1,160 +1,131 @@
 """
-RAG para contratos on-prem
-Pipeline mínima para ingestão de PDFs, chunking inteligente,
-embeddings locais com sentence-transformers, index FAISS persistente,
-e função de consulta RAG que usa a OpenAI (sua chave em .env) para gerar
-respostas/sumários/extrações a partir dos trechos recuperados.
+RAG Híbrido Offline (PDFs + JSON)
 
-Executar: python rag_contratos_onprem.py --ingest   # para indexar
-Executar: python rag_contratos_onprem.py --query "Pergunta do advogado"
+- Embeddings persistidos no disco, busca totalmente offline.
+- Apenas os trechos mais relevantes são enviados para o OpenAI GPT, reduzindo custo e tokens.
+
+Execução:
+
+1️⃣ Ingestão de PDFs e JSON:
+   python rag_contratos_onprem.py --ingest
+   # Processa PDFs e JSON, gera embeddings e salva localmente (FAISS + JSON embeddings).
+
+2️⃣ Consulta completa (resposta + trechos):
+   python rag_contratos_onprem.py --query "PERGUNTA"
+
+3️⃣ Consulta forçada (top JSON + top PDF, resposta + trechos):
+   python rag_contratos_onprem.py --query-forced "PERGUNTA"
+
+4️⃣ Consulta simples (apenas resposta do GPT):
+   python rag_contratos_onprem.py --simple "PERGUNTA"
+
+5️⃣ Consulta simples forçada (top JSON + PDF, apenas resposta):
+   python rag_contratos_onprem.py --simple-forced "PERGUNTA"
 
 Observações:
-  - Embeddings: usamos modelo multilingual local (boa cobertura PT-BR)
-  - Index: FAISS (persistente no disco via gravação do índice + metadata.jsonl)
-  - LLM: usa OpenAI apenas para geração (RAG). 
 
+- Pipeline offline: PDFs e JSON processados e armazenados localmente.
+- Top K e outros parâmetros podem ser ajustados no código.
 """
 
+
 import os
-import argparse
+import re
 import json
 import hashlib
+import argparse
+import logging
 from pathlib import Path
-from tqdm import tqdm
-from dotenv import load_dotenv
+from typing import List, Tuple, Dict, Any
 
+import numpy as np
 import fitz  # PyMuPDF
-from sentence_transformers import SentenceTransformer
 import faiss
-import openai
+from dotenv import load_dotenv
+from openai import OpenAI
+from tqdm import tqdm
 
-# -------------------- Config ------------------
+# -------------------- Config --------------------
 load_dotenv()
-PDF_FOLDER = Path(os.getenv("PDF_FOLDER", "pdfs"))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
 
-# Persistência
-INDEX_DIR = Path("vector_index")
-INDEX_FILE = INDEX_DIR / "faiss.index"
-METADATA_FILE = INDEX_DIR / "metadata.jsonl"
-EMB_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"  
+PDF_FOLDER: Path = Path(os.getenv("PDF_FOLDER", "pdfs"))
+DOCNAME_JSON_PATH: Path = Path(os.getenv("DOCNAME_JSON", ""))
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY")
 
-# Chunking params
-CHUNK_CHAR_SIZE = 3000  
-CHUNK_OVERLAP = 400
+INDEX_DIR: Path = Path("vector_index")
+INDEX_FILE: Path = INDEX_DIR / "faiss.index"
+METADATA_FILE: Path = INDEX_DIR / "metadata.jsonl"
+JSON_EMB_FILE: Path = INDEX_DIR / "json_embeddings.json"
 
-# Retrieval
-TOP_K = 6
+CHUNK_CHAR_SIZE: int = 3000
+CHUNK_OVERLAP: int = 400
+TOP_K: int = 6
 
-# -------------------- Utilidades --------------------
+# Config logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# Inicializa cliente OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# -------------------- Funções utilitárias --------------------
 def sha1_of_file(path: Path) -> str:
     h = hashlib.sha1()
     with open(path, "rb") as f:
-        while True:
-            chunk = f.read(8192)
-            if not chunk:
-                break
+        while chunk := f.read(8192):
             h.update(chunk)
     return h.hexdigest()
 
-# -------------------- Extração de entidades --------------------
-def extract_entities(text):
-    """Extrai CNPJs, CPFs, RGs e CEPs do texto."""
-    cnpjs = re.findall(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', text)
-    cpfs  = re.findall(r'\d{3}\.\d{3}\.\d{3}-\d{2}', text)
-    rgs   = re.findall(r'\d{1,2}\.\d{3}\.\d{3}-\d{1}', text)
-    ceps  = re.findall(r'\d{5}-\d{3}', text)
-    return {
-        "cnpjs": list(set(cnpjs)),
-        "cpfs": list(set(cpfs)),
-        "rgs": list(set(rgs)),
-        "ceps": list(set(ceps))
-    }
-
-# -------------------- Extração de texto --------------------
 
 def extract_text_from_pdf(path: Path) -> str:
-    """Extrai texto de PDF assumindo que é texto (não-OCR).
-    """
     doc = fitz.open(str(path))
-    parts = []
-    for p in doc:
-        txt = p.get_text("text")
-        parts.append(txt)
+    text = "\n".join(p.get_text("text") for p in doc)
     doc.close()
-    return "\n".join(parts)
+    return text
 
 
-# -------------------- Chunking inteligente --------------------
-import re
+# -------------------- Embeddings --------------------
+def get_openai_embedding(text: str, model: str = "text-embedding-3-large") -> np.ndarray:
+    if not text.strip():
+        return np.zeros(3072, dtype="float32")
+    resp = client.embeddings.create(input=[text], model=model)
+    return np.array(resp.data[0].embedding, dtype="float32")
 
-def smart_chunk(text: str, chunk_size: int = CHUNK_CHAR_SIZE, overlap: int = CHUNK_OVERLAP):
-    """Tenta dividir por cláusulas/headings. Se não houver, usa chunk fixo com overlap.
-    Retorna lista de (chunk_text, start_char, end_char)
-    """
-    # Normaliza quebras
-    t = text.replace('\r', '')
 
-    # Tentativa 1: dividir por headings comuns em contratos (CLÁUSULA, Cláusula, Art., §, PARÁGRAFO)
-    headings_pattern = re.compile(r"(?=\n\s*(CLÁUSULA\b|Cláusula\b|ARTIGO\b|Artigo\b|Art\.|PARÁGRAFO\b|Parágrafo\b|§))", re.IGNORECASE)
-    parts = [s.strip() for s in headings_pattern.split(t) if s and not s.isspace()]
+def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    a_norm = a / np.linalg.norm(a)
+    b_norm = b / np.linalg.norm(b)
+    return float(np.dot(a_norm, b_norm))
 
-    # Se headings achar muitas partes razoáveis, recombinar para chunks
+
+# -------------------- Chunking --------------------
+def smart_chunk(text: str, chunk_size: int = CHUNK_CHAR_SIZE, overlap: int = CHUNK_OVERLAP) -> List[Tuple[str, int, int]]:
+    t = text.replace("\r", "")
+    headings_pattern = re.compile(r"(?=\n\s*(CLÁUSULA|Cláusula|ARTIGO|Artigo|§))", re.IGNORECASE)
+    parts = [s.strip() for s in headings_pattern.split(t) if s.strip()]
+
     if len(parts) >= 4:
-        # Recombina até atingir chunk_size
-        chunks = []
-        cur = ""
-        cur_start = 0
-        i = 0
+        chunks, cur = [], ""
         for p in parts:
-            if not p.strip():
-                continue
             if len(cur) + len(p) <= chunk_size:
-                if cur == "":
-                    cur_start = i
-                cur += "\n\n" + p
+                cur += "\n" + p
             else:
-                if cur:
-                    chunks.append(cur.strip())
+                chunks.append(cur.strip())
                 cur = p
-            i += len(p)
         if cur:
             chunks.append(cur.strip())
-        # convert to tuples with character offsets (approximate)
-        out = []
-        pos = 0
-        for c in chunks:
-            start = t.find(c, pos)
-            if start == -1:
-                start = pos
-            end = start + len(c)
-            out.append((c, start, end))
-            pos = end
-        return out
+        return [(c, 0, 0) for c in chunks]
 
-    # Fallback: chunk fixo com overlap
-    out = []
-    i = 0
-    L = len(t)
+    # fallback
+    out, i, L = [], 0, len(t)
     while i < L:
         end = min(i + chunk_size, L)
-        chunk = t[i:end]
-        out.append((chunk, i, end))
+        out.append((t[i:end], i, end))
         i = max(end - overlap, end)
     return out
 
 
-# -------------------- Embeddings (local) --------------------
-
-def init_embedding_model(model_name=EMB_MODEL_NAME):
-    model = SentenceTransformer(model_name)
-    return model
-
-
-# -------------------- Index (FAISS) --------------------
-
+# -------------------- FAISS Index --------------------
 def ensure_index_dir():
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -163,203 +134,392 @@ class SimpleFAISSIndex:
     def __init__(self, dim: int):
         self.dim = dim
         self.index = faiss.IndexFlatL2(dim)
-        self.metadatas = [] 
+        self.metadatas: List[Dict[str, Any]] = []
 
-    def add(self, vectors, metadatas):
+    def add(self, vectors: np.ndarray, metadatas: List[Dict[str, Any]]):
         self.index.add(vectors)
         self.metadatas.extend(metadatas)
 
-    def save(self, path_index: Path, path_meta: Path):
-        faiss.write_index(self.index, str(path_index))
-        with open(path_meta, 'w', encoding='utf-8') as f:
+    def save(self):
+        faiss.write_index(self.index, str(INDEX_FILE))
+        with open(METADATA_FILE, "w", encoding="utf-8") as f:
             for m in self.metadatas:
-                f.write(json.dumps(m, ensure_ascii=False) + '\n')
+                f.write(json.dumps(m, ensure_ascii=False) + "\n")
 
     @classmethod
-    def load(cls, path_index: Path, path_meta: Path):
-        idx = faiss.read_index(str(path_index))
-        dim = idx.d
-        obj = cls(dim)
+    def load(cls):
+        idx = faiss.read_index(str(INDEX_FILE))
+        obj = cls(idx.d)
         obj.index = idx
-        obj.metadatas = []
-        if path_meta.exists():
-            with open(path_meta, 'r', encoding='utf-8') as f:
-                for line in f:
-                    obj.metadatas.append(json.loads(line))
+        with open(METADATA_FILE, "r", encoding="utf-8") as f:
+            obj.metadatas = [json.loads(line) for line in f]
         return obj
 
-    def search(self, vector, top_k=TOP_K):
-        if self.index.ntotal == 0:
-            return []
+    def search(self, vector: np.ndarray, top_k: int = TOP_K) -> List[Dict[str, Any]]:
         D, I = self.index.search(vector, top_k)
         results = []
         for dist_list, idx_list in zip(D, I):
             for dist, idx in zip(dist_list, idx_list):
-                if idx < 0 or idx >= len(self.metadatas):
-                    continue
-                m = self.metadatas[idx]
-                results.append({"score": float(dist), "metadata": m})
+                if 0 <= idx < len(self.metadatas):
+                    results.append({"score": float(dist), "metadata": self.metadatas[idx]})
         return results
 
 
-# -------------------- Ingestão --------------------
-
-def ingest_all_pdfs(pdf_folder: Path, model: SentenceTransformer):
+# -------------------- Ingestão PDFs Offline --------------------
+def ingest_all_pdfs():
+    """Ingestão de PDFs com verificação de novos arquivos"""
     ensure_index_dir()
-    metadata_items = []
-    vectors = []
-    entities_index = {}  # <-- Novo dicionário para armazenar as entidades por documento
+    metadata_items, vectors = [], []
 
-    for pdf_path in tqdm(list(pdf_folder.glob("*.pdf")), desc="PDFs"):
-        doc_id = pdf_path.stem
+    existing_index = None
+    if INDEX_FILE.exists() and METADATA_FILE.exists():
+        existing_index = SimpleFAISSIndex.load()
+        logging.info("FAISS index existente carregado.")
+    else:
+        logging.info("Criando novo FAISS index.")
+
+    for pdf_path in tqdm(list(PDF_FOLDER.glob("*.pdf")), desc="Processando PDFs"):
         file_hash = sha1_of_file(pdf_path)
+        # Verifica se já existe embedding para esse arquivo
+        if existing_index and any(md["file_hash"] == file_hash for md in existing_index.metadatas):
+            continue  # já processado
+
+        doc_id = pdf_path.stem
         text = extract_text_from_pdf(pdf_path)
-
-        # Extrai entidades do documento completo
-        ents = extract_entities(text)
-        entities_index[doc_id] = ents
-
         chunks = smart_chunk(text)
+
         for i, (chunk_text, start, end) in enumerate(chunks):
-            emb = model.encode(chunk_text)
-            vectors.append(emb.astype('float32'))
+            emb = get_openai_embedding(chunk_text)
+            vectors.append(emb)
             metadata_items.append({
                 "doc_id": doc_id,
-                "file": str(pdf_path.name),
+                "file": pdf_path.name,
                 "chunk_index": i,
-                "start_char": start,
-                "end_char": end,
-                "text_snippet": chunk_text[:2000],
-                "file_hash": file_hash,
+                "text_snippet": chunk_text[:1500],
+                "file_hash": file_hash
             })
 
-    import numpy as np
     if not vectors:
-        print("Nenhum chunk gerado — verifique a pasta de PDFs")
+        logging.info("Nenhum PDF novo encontrado.")
         return
 
     arr = np.vstack(vectors)
-    dim = arr.shape[1]
-    faiss_idx = SimpleFAISSIndex(dim)
+    faiss_idx = existing_index if existing_index else SimpleFAISSIndex(arr.shape[1])
     faiss_idx.add(arr, metadata_items)
-    faiss_idx.save(INDEX_FILE, METADATA_FILE)
+    faiss_idx.save()
+    logging.info("✅ FAISS index atualizado.")
 
-    # Salvar o índice de entidades
-    with open(INDEX_DIR / "entities_index.json", "w", encoding="utf-8") as f:
-        json.dump(entities_index, f, ensure_ascii=False, indent=2)
 
-    print("Index salvo em", INDEX_DIR)
-    print("Índice de entidades salvo em entities_index.json")
-
-# -------------------- Query / RAG --------------------
-
-def load_index():
+# -------------------- Ingestão JSON Offline --------------------
+def load_docname_json_embeddings() -> List[Dict[str, Any]]:
+    """Carrega JSON embeddings, gera apenas novos"""
     ensure_index_dir()
-    if not INDEX_FILE.exists() or not METADATA_FILE.exists():
-        raise FileNotFoundError("Index não encontrado. Rode --ingest primeiro.")
-    idx = SimpleFAISSIndex.load(INDEX_FILE, METADATA_FILE)
-    return idx
+    existing = {}
+    if JSON_EMB_FILE.exists():
+        with open(JSON_EMB_FILE, "r", encoding="utf-8") as f:
+            existing = {e["key"]: e for e in json.load(f)}
+
+    new_entries = []
+    if not DOCNAME_JSON_PATH.exists():
+        logging.warning("DOCNAME_JSON não encontrado.")
+        return []
+
+    with open(DOCNAME_JSON_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    for file, people in data.items():
+        for person in people:
+            key = f"{file}-{person.get('nome','')}-{person.get('documento','')}"
+            if key in existing:
+                new_entries.append(existing[key])
+            else:
+                texto = f"{person.get('nome', '')} - {person.get('documento', '')} (arquivo: {file})"
+                emb = get_openai_embedding(texto)
+                entry = {"key": key, "name": texto, "embedding": emb.tolist(), "original": person}
+                new_entries.append(entry)
+
+    # Salva embeddings JSON atualizadas
+    with open(JSON_EMB_FILE, "w", encoding="utf-8") as f:
+        json.dump(new_entries, f, ensure_ascii=False, indent=2)
+
+    # Converte embeddings para np.array
+    for e in new_entries:
+        e["embedding"] = np.array(e["embedding"], dtype="float32")
+
+    return new_entries
 
 
-def call_openai_chat(system_prompt: str, user_prompt: str, model_name: str = "gpt-4o-mini"):
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-    resp = openai.ChatCompletion.create(model=model_name, messages=messages, max_tokens=800)
-    return resp['choices'][0]['message']['content']
+# -------------------- Consulta Híbrida --------------------
+def query_rag(question: str, json_embeddings: List[Dict[str, Any]], top_k: int = TOP_K) -> Dict[str, Any]:
+    """Consulta RAG híbrido (PDF + JSON) totalmente offline para busca"""
+    qv = get_openai_embedding(question)
+    qv_norm = qv / np.linalg.norm(qv)
 
+    # Busca JSON
+    json_scores = [(cosine_similarity(qv_norm, e["embedding"]), e) for e in json_embeddings]
+    json_scores.sort(reverse=True, key=lambda x: x[0])
+    json_top = json_scores[:top_k]
 
-PROMPT_TEMPLATE_SUMMARY = (
-    "Você é um assistente jurídico. Use SOMENTE os trechos abaixo para responder."
-    " Retorne JSON com: {{'summary':..., 'doc_citations': [{{'doc_id':..., 'chunk_index':..., 'text_excerpt':...}}]}}."
-)
+    # Busca FAISS
+    idx = SimpleFAISSIndex.load()
+    hits = idx.search(np.expand_dims(qv, 0), top_k=top_k)
 
-PROMPT_TEMPLATE_QA = (
-    "Você é um assistente jurídico. Você receberá TRECHOS de contratos e uma PERGUNTA."
-    " Use apenas as informações dos trechos. Retorne resposta objetiva em Português e inclua a lista de citações usadas"
-)
-
-
-def query_rag(question: str, model_embed: SentenceTransformer, top_k: int = TOP_K):
-    # 1️⃣ Verifica se a pergunta contém algum identificador conhecido
-    ents = extract_entities(question)
-    entity_hits = sum(len(v) for v in ents.values())
-    
-    if entity_hits > 0:
-        # Carregar índice de entidades
-        entities_path = INDEX_DIR / "entities_index.json"
-        if not entities_path.exists():
-            raise FileNotFoundError("entities_index.json não encontrado. Rode --ingest primeiro.")
-
-        with open(entities_path, "r", encoding="utf-8") as f:
-            entities_index = json.load(f)
-
-        # Procurar o documento que contém o CPF/CNPJ/RG/CEP
-        matched_docs = []
-        for doc_id, data in entities_index.items():
-            for tipo, lista in data.items():
-                for e in lista:
-                    if e in question:
-                        matched_docs.append({"doc_id": doc_id, "entity": e, "type": tipo})
-        
-        if matched_docs:
-            return {
-                "answer": f"Documento(s) encontrado(s) com base no identificador: {matched_docs}",
-                "retrieved": matched_docs
-            }
-
-        # Nenhum documento contém o identificador
-        return {"answer": "Nenhum documento contém o identificador informado.", "retrieved": []}
-
-    # 2️⃣ Caso não haja identificadores, segue o fluxo RAG normal
-    idx = load_index()
-    qv = model_embed.encode(question).astype('float32')
-    import numpy as np
-    qv = np.expand_dims(qv, axis=0)
-    hits = idx.search(qv, top_k=top_k)
-
-    context_items = []
+    # Combina resultados
+    combined = []
+    for score, e in json_top:
+        combined.append({
+            "source": "json",
+            "score": float(score),
+            "text_snippet": e["name"],
+            "metadata": e["original"]
+        })
     for h in hits:
-        m = h['metadata']
-        context_items.append({
-            'doc_id': m['doc_id'],
-            'chunk_index': m['chunk_index'],
-            'score': h['score'],
-            'text_snippet': m['text_snippet']
+        combined.append({
+            "source": "pdf",
+            "score": 1 / (1 + h["score"]),
+            "text_snippet": h["metadata"]["text_snippet"],
+            "metadata": h["metadata"]
+        })
+    combined.sort(key=lambda x: x["score"], reverse=True)
+    combined_top = combined[:top_k]
+
+    # OpenAI recebe apenas os trechos mais relevantes
+    context_text = "\n\n---\n\n".join([f"[{c['source'].upper()}] {c['text_snippet']}" for c in combined_top])
+    prompt = (
+        f"Você é um assistente jurídico. Use os trechos abaixo (PDFs e JSON) para responder:\n\n"
+        f"{context_text}\n\nPergunta: {question}\n\n"
+        f"Responda em Português de forma objetiva, citando a origem (PDF ou JSON)."
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Assistente jurídico RAG híbrido."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=800
+    )
+
+    answer = resp.choices[0].message.content
+    return {"answer": answer, "retrieved": combined_top}
+
+
+# -------------------- Consulta Híbrida Simplificada --------------------
+def query_rag_simple(question: str, json_embeddings: List[Dict[str, Any]], top_k: int = TOP_K) -> str:
+    """
+    Consulta RAG híbrido (PDF + JSON) e retorna apenas a resposta do GPT.
+    Mantém a busca offline, mas não retorna os trechos recuperados.
+    """
+    qv = get_openai_embedding(question)
+    qv_norm = qv / np.linalg.norm(qv)
+
+    # Busca JSON
+    json_scores = [(cosine_similarity(qv_norm, e["embedding"]), e) for e in json_embeddings]
+    json_scores.sort(reverse=True, key=lambda x: x[0])
+    json_top = json_scores[:top_k]
+
+    # Busca FAISS
+    idx = SimpleFAISSIndex.load()
+    hits = idx.search(np.expand_dims(qv, 0), top_k=top_k)
+
+    # Combina resultados
+    combined = []
+    for score, e in json_top:
+        combined.append({
+            "source": "json",
+            "score": float(score),
+            "text_snippet": e["name"],
+            "metadata": e["original"]
+        })
+    for h in hits:
+        combined.append({
+            "source": "pdf",
+            "score": 1 / (1 + h["score"]),
+            "text_snippet": h["metadata"]["text_snippet"],
+            "metadata": h["metadata"]
+        })
+    combined.sort(key=lambda x: x["score"], reverse=True)
+    combined_top = combined[:top_k]
+
+    # OpenAI recebe apenas os trechos mais relevantes
+    context_text = "\n\n---\n\n".join([f"[{c['source'].upper()}] {c['text_snippet']}" for c in combined_top])
+    prompt = (
+        f"Você é um assistente jurídico. Use os trechos abaixo (PDFs e JSON) para responder:\n\n"
+        f"{context_text}\n\nPergunta: {question}\n\n"
+        f"Responda em Português de forma objetiva, citando a origem (PDF ou JSON)."
+    )
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Assistente jurídico RAG híbrido."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=800
+    )
+
+    return resp.choices[0].message.content
+
+def query_rag_forced(question: str, json_embeddings, top_k_json=5, top_k_pdf=5):
+    """
+    Consulta RAG híbrido (PDF + JSON) garantindo que sempre pegue
+    top_k_json itens do JSON e top_k_pdf chunks do PDF.
+    """
+    qv = get_openai_embedding(question)
+    qv_norm = qv / np.linalg.norm(qv)
+
+    # Busca JSON
+    json_scores = [(cosine_similarity(qv_norm, e["embedding"]), e) for e in json_embeddings]
+    json_scores.sort(reverse=True, key=lambda x: x[0])
+    json_top = json_scores[:top_k_json]
+
+    # Busca FAISS (PDF)
+    idx = SimpleFAISSIndex.load()
+    hits = idx.search(np.expand_dims(qv, 0), top_k=top_k_pdf)
+
+    # Combina resultados forçando top-k de cada
+    combined = []
+    for score, e in json_top:
+        combined.append({
+            "source": "json",
+            "score": float(score),
+            "text_snippet": e["name"],
+            "metadata": e["original"]
+        })
+    for h in hits:
+        combined.append({
+            "source": "pdf",
+            "score": 1 / (1 + h["score"]),
+            "text_snippet": h["metadata"]["text_snippet"],
+            "metadata": h["metadata"]
         })
 
-    context_text = "\n\n---\n\n".join(
-        [f"DOC:{c['doc_id']}#CHUNK:{c['chunk_index']}\n{c['text_snippet']}" for c in context_items]
+    # Ordenar combinado por score não é estritamente necessário aqui, mas pode manter
+    combined_top = combined[:top_k_json + top_k_pdf]
+
+    # Prompt para GPT
+    context_text = "\n\n---\n\n".join([f"[{c['source'].upper()}] {c['text_snippet']}" for c in combined_top])
+    prompt = (
+        f"Você é um assistente jurídico. Use os trechos abaixo (PDFs e JSON) para responder:\n\n"
+        f"{context_text}\n\nPergunta: {question}\n\n"
+        f"Responda em Português de forma objetiva, citando a origem (PDF ou JSON)."
     )
 
-    user_prompt = (
-        f"CONTEXT:\n{context_text}\n\nPERGUNTA: {question}\n\n"
-        "Responda em Português, cite apenas os trechos acima usando doc_id e chunk_index."
-        " Se não souber, diga 'Não encontrado'."
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Assistente jurídico RAG híbrido."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=800
     )
-    system_prompt = "Assistente jurídico. Cite as fontes (doc_id e chunk_index). Seja sucinto."
-    answer = call_openai_chat(system_prompt, user_prompt)
-    return {'answer': answer, 'retrieved': context_items}
+
+    return {"answer": resp.choices[0].message.content, "retrieved": combined_top}
+
+def query_rag_simple_forced(question: str, json_embeddings, top_k_json=5, top_k_pdf=5) -> str:
+    """
+    Consulta RAG híbrido (PDF + JSON) garantindo que sempre pegue top_k_json do JSON
+    e top_k_pdf do PDF, mas retorna apenas a resposta do GPT.
+    """
+    # 1️⃣ Embedding da pergunta
+    qv = get_openai_embedding(question)
+    qv_norm = qv / np.linalg.norm(qv)
+
+    # 2️⃣ Busca JSON
+    json_scores = [(cosine_similarity(qv_norm, e["embedding"]), e) for e in json_embeddings]
+    json_scores.sort(reverse=True, key=lambda x: x[0])
+    json_top = json_scores[:top_k_json]
+
+    # 3️⃣ Busca FAISS (PDF)
+    idx = SimpleFAISSIndex.load()
+    hits = idx.search(np.expand_dims(qv, 0), top_k=top_k_pdf)
+
+    # 4️⃣ Combina resultados
+    combined = []
+    for score, e in json_top:
+        combined.append({
+            "source": "json",
+            "score": float(score),
+            "text_snippet": e["name"],
+            "metadata": e["original"]
+        })
+    for h in hits:
+        combined.append({
+            "source": "pdf",
+            "score": 1 / (1 + h["score"]),
+            "text_snippet": h["metadata"]["text_snippet"],
+            "metadata": h["metadata"]
+        })
+
+    # Mantemos todos os resultados forçados
+    combined_top = combined[:top_k_json + top_k_pdf]
+
+    # 5️⃣ Construção do prompt
+    context_text = "\n\n---\n\n".join([f"[{c['source'].upper()}] {c['text_snippet']}" for c in combined_top])
+    prompt = (
+        f"Você é um assistente jurídico. Use os trechos abaixo (PDFs e JSON) para responder:\n\n"
+        f"{context_text}\n\nPergunta: {question}\n\n"
+        f"Responda em Português de forma objetiva, citando a origem (PDF ou JSON)."
+    )
+
+    # 6️⃣ Chamada GPT
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Assistente jurídico RAG híbrido."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=800
+    )
+
+    return resp.choices[0].message.content
+
 
 
 # -------------------- CLI --------------------
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ingest", action='store_true', help="Ingest PDFs e construir índice")
-    parser.add_argument("--query", type=str, help="Fazer uma pergunta (RAG)")
+    parser = argparse.ArgumentParser(description="RAG híbrido offline (PDF + JSON)")
+    parser.add_argument("--ingest", action="store_true", help="Ingestão de PDFs e JSON")
+    parser.add_argument("--query", type=str, help="Consulta ao RAG (resposta + trechos recuperados)")
+    parser.add_argument("--query-forced", type=str, help="Consulta híbrida forçando top JSON + PDF (resposta + trechos)")
+    parser.add_argument("--simple", type=str, help="Consulta simplificada ao RAG (apenas resposta do GPT)")
+    parser.add_argument("--simple-forced", type=str, help="Consulta simplificada forçando top JSON + PDF (apenas resposta do GPT)")
+
+    # ✅ Aqui está a correção: parse args primeiro
     args = parser.parse_args()
 
-    model = init_embedding_model()
-
     if args.ingest:
-        ingest_all_pdfs(PDF_FOLDER, model)
+        ingest_all_pdfs()
+        load_docname_json_embeddings()
+        logging.info("✅ Ingestão concluída.")
 
-    if args.query:
-        out = query_rag(args.query, model)
+    elif args.query:
+        json_embeds = load_docname_json_embeddings()
+        out = query_rag(args.query, json_embeds)
         print(json.dumps(out, ensure_ascii=False, indent=2))
 
+    elif args.query_forced:
+        json_embeds = load_docname_json_embeddings()
+        out = query_rag_forced(args.query_forced, json_embeds)
+        print(json.dumps(out, ensure_ascii=False, indent=2))
 
-if __name__ == '__main__':
+    elif args.simple:
+        json_embeds = load_docname_json_embeddings()
+        resposta = query_rag_simple(args.simple, json_embeds)
+        print(resposta)
+
+    elif args.simple_forced:
+        json_embeds = load_docname_json_embeddings()
+        resposta = query_rag_simple_forced(args.simple_forced, json_embeds)
+        print(resposta)
+
+    else:
+        logging.info(
+            "Use --ingest para ingestão, "
+            "--query ou --query-forced para consulta completa, "
+            "ou --simple / --simple-forced para resposta direta."
+        )
+
+
+if __name__ == "__main__":
     main()
