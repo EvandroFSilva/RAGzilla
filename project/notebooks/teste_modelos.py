@@ -57,7 +57,7 @@ def extrair_envolvidos_ollama(modelo, texto, max_retentativas=3, delay=10):
                         "num_predict": 1024
                     }
                 },
-                timeout=180
+                timeout=1800
             )
 
             if response.status_code == 200:
@@ -118,9 +118,19 @@ def processar_modelos(pasta_pdfs, modelos):
 
 # === Execução principal ===
 if __name__ == "__main__":
-    pasta = "documentos"
+    #pasta = "documentos"
+    pasta = "D:/Biopark/4p/PI3/documents/raw"
 
     modelos_teste = [
+        "deepseek-r1:8b"
+    ]
+
+    print("🚀 Iniciando testes com múltiplos modelos Ollama...")
+    processar_modelos(pasta, modelos_teste)
+
+    print("\n🏁 Todos os modelos foram processados com sucesso!")
+
+"""
         "mistral:7b",
         "llama3:8b",
         "qwen2:7b",
@@ -129,9 +139,4 @@ if __name__ == "__main__":
         "deepseek-r1:8b",
         "deepseek-r1:7b"
         "qwen3:8b"
-    ]
-
-    print("🚀 Iniciando testes com múltiplos modelos Ollama...")
-    processar_modelos(pasta, modelos_teste)
-
-    print("\n🏁 Todos os modelos foram processados com sucesso!")
+"""
