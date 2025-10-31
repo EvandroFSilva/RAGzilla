@@ -1,0 +1,50 @@
+{
+  "3DI.ENGENHARIA.e.PURE.TECH.ENERGY.-.Contrato.de.Empresa.Associada.pdf": {
+    "envolvidos": [
+      {
+        "nome": "3DI ENGENHARIA LTDA",
+        "documento": "17.906.653/0001-37"
+      },
+      {
+        "nome": "PURE TECH ENERGY LTDA",
+        "documento": "41.827.255/0001-00"
+      },
+      {
+        "nome": "BIOPARK",
+        "documento": "21.526.709/0001-03"
+      },
+      {
+        "nome": "Lucio Ricken",
+        "documento": "060.001.199-25"
+      },
+      {
+        "nome": "Maycon Fabio Savoldi",
+        "documento": "054.036.899-84"
+      },
+      {
+        "nome": "Paulo Victor Almeida",
+        "documento": "007.187.289-20"
+      }
+    ]
+  },
+  "3G.INOVACAO.-.CONSULTORIA.EMPRESARIAL.LTDA.-.Contrato.de.Empresa.Associada.pdf": {
+    "envolvidos": [
+      {
+        "nome": "3G INOVACAO - CONSULTORIA EMPRESARIAL LTDA",
+        "documento": "08.297.646/0001-94"
+      },
+      {
+        "nome": "Giovano Marcos Mazetto",
+        "documento": "811.748.299-15"
+      },
+      {
+        "nome": "PARQUE CIENTÍFICO E TECNOLÓGICO DE BIOCIÊNCIAS LTDA",
+        "documento": "21.526.709/0001-03"
+      },
+      {
+        "nome": "Paulo Victor Almeida",
+        "documento": "007.187.289-20"
+      }
+    ]
+  }
+}
