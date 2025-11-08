@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+faiss-cpu
+openai
+python-dotenv
+pytesseract
+PyMuPDF
+pillow
+google-api-python-client
+google-auth
+streamlit
+requests
+pydantic
+pytest
+tqdm

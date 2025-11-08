@@ -1,46 +1,117 @@
-# RAGzilla
- Plataforma inteligente baseada em RAG que permite consultas em linguagem natural sobre documentos jurídicos. Utilizando técnicas avançadas de IA, o sistema recupera trechos relevantes de leis, contratos, sentenças e pareceres, e gera respostas precisas e contextualizadas, facilitando o acesso à informação jurídica com agilidade e confiança.
- https://drive.google.com/drive/folders/1iIz7fdd8bNsiaIPrEa7SucWGaNptVyaC?usp=sharing
+# RAG Web Contracts
 
-## RAG offline com Ollama
+Sistema completo de Recuperação Aumentada por Geração (RAG) que permite buscar, selecionar e consultar contratos armazenados no Google Drive por meio de uma API FastAPI e interface Streamlit. A solução utiliza embeddings da OpenAI, índices FAISS locais e suporta OCR automático para PDFs digitalizados.
 
-O repositório agora inclui uma aplicação **totalmente offline** que utiliza os modelos
-`embeddinggemma` (embeddings) e `Qwen3-8B` (LLM) disponibilizados pelo [Ollama](https://ollama.com/).
-Ela permite:
+## Visão geral da arquitetura
 
-- Procurar documentos por meio de chunks curtos (~50 tokens) para localizar nomes e números.
-- Selecionar vários documentos relevantes e limpar a seleção sempre que necessário.
-- Formular perguntas considerando apenas os documentos escolhidos, utilizando chunks maiores (~500 tokens) como contexto.
-
-### Pré-requisitos
-
-- Servidor Ollama em execução com os modelos `embeddinggemma` e `Qwen3-8B` previamente baixados.
-- Documentos `.txt`, `.md` ou `.pdf` armazenados em `project/data/documents` (ou outro diretório definido na variável `RAG_DOCUMENTS_DIR`).
-
-### Preparação dos índices
-
-```bash
-python -m project.src.rag_ollama_pipeline --ingest
+```
+Google Drive --> Ingestão (OCR + chunking curto/long) --> Embeddings OpenAI --> FAISS (curto/long) --> API FastAPI --> Streamlit
 ```
 
-O comando acima lê todos os documentos suportados, gera os embeddings com chunks pequenos e grandes e salva os índices na pasta `project/data/indexes`.
+### Componentes principais
 
-### Execução da aplicação
+| Pasta/arquivo | Descrição |
+| ------------- | --------- |
+| `backend/ingestion.py` | Pipeline de ingestão com sincronização do Google Drive, OCR e geração de índices FAISS curtos (20 tokens) e longos (500 tokens). |
+| `backend/retrieval.py` | Consulta aos índices FAISS (busca inicial curta + contexto longo para resposta). |
+| `backend/query.py` | Geração de respostas com o modelo `gpt-4o-mini`, garantindo citações das fontes utilizadas. |
+| `backend/main.py` | API FastAPI com endpoints `/health`, `/search` e `/query`. |
+| `frontend/app.py` | Interface Streamlit para busca, seleção de documentos e perguntas sobre os contratos escolhidos. |
+| `backend/drive_utils.py` | Download e verificação de PDFs no Google Drive utilizando credenciais de serviço. |
+| `backend/settings.py` | Configuração centralizada via variáveis de ambiente. |
+| `requirements.txt` | Dependências Python necessárias. |
+| `Dockerfile` / `docker-compose.yml` | Execução containerizada da API e da interface web. |
 
-```bash
-streamlit run project/src/rag_ollama_app.py
+## Pré-requisitos
+
+- Python 3.11+
+- Credenciais de serviço do Google Drive com acesso somente leitura à pasta configurada
+- Variável `OPENAI_API_KEY` com chave de API válida
+- Biblioteca Tesseract instalada no sistema (ex.: `apt-get install tesseract-ocr`)
+
+## Configuração
+
+1. Crie e configure um arquivo `.env` na raiz do projeto:
+
+```
+OPENAI_API_KEY=sk-...
+GOOGLE_DRIVE_FOLDER_ID=...
+GOOGLE_APPLICATION_CREDENTIALS=/caminho/para/service_account.json
 ```
 
-1. Realize buscas para encontrar os documentos de interesse.
-2. Selecione um ou mais documentos usando os botões exibidos.
-3. Faça perguntas sobre os documentos selecionados e visualize os trechos utilizados na resposta.
-
-Também é possível interagir via linha de comando:
+2. Instale as dependências:
 
 ```bash
-# Busca rápida
-python -m project.src.rag_ollama_pipeline --search "nome do colaborador"
-
-# Pergunta com lista de doc_ids selecionados
-python -m project.src.rag_ollama_pipeline --question "Qual é a vigência do contrato?" --selected contrato_a contrato_b
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
+
+3. Execute a ingestão inicial dos documentos:
+
+```bash
+python backend/ingestion.py --sync-drive --recreate
+ou
+python -m backend.ingestion --sync-drive --recreate
+```
+
+O comando irá sincronizar os PDFs do Google Drive, executar OCR quando necessário, criar os chunks curtos/longos, gerar embeddings com o modelo `text-embedding-3-small` e salvar os índices FAISS em `data/faiss_index_short/index.faiss` e `data/faiss_index_long/index.faiss`.
+
+## Executando a API
+
+```bash
+uvicorn backend.main:app --reload
+```
+
+Endpoints principais:
+
+- `POST /search` – recebe `{ "query": "..." }` e retorna a lista de documentos relevantes (via embeddings curtos).
+- `POST /query` – recebe `{ "query": "...", "selected_docs": ["docA.pdf"] }`, busca os 5 chunks longos mais relevantes e envia ao `gpt-4o-mini` para gerar a resposta contextualizada.
+
+## Interface Streamlit
+
+Com a API em execução, em outro terminal rode:
+
+```bash
+streamlit run frontend/app.py
+```
+
+Fluxo sugerido:
+
+1. Informe uma pergunta inicial para localizar documentos.
+2. Selecione um ou mais arquivos apresentados.
+3. Faça uma pergunta final. Apenas os 5 melhores trechos longos serão enviados ao modelo para gerar a resposta.
+4. A resposta exibirá as fontes (trecho e nome do arquivo) utilizadas.
+
+## Execução com Docker
+
+O repositório inclui arquivos de containerização para simplificar o deploy local:
+
+```bash
+docker compose up --build
+```
+
+O serviço expõe:
+
+- API FastAPI em `http://localhost:8000`
+- Interface Streamlit em `http://localhost:8501`
+
+Certifique-se de montar o diretório `data/` como volume para persistência dos índices FAISS.
+
+## Testes
+
+Rode os testes automatizados com:
+
+```bash
+pytest
+```
+
+Os testes cobrem utilitários de chunking e formatação de prompts.
+
+## Logs
+
+O backend utiliza logging estruturado via `logging.config.dictConfig`. Mensagens são emitidas para o stdout com timestamp, nível e módulo de origem.
+
+## Licença
+
+Distribuído apenas para fins educacionais.
