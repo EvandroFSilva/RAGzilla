@@ -178,6 +178,44 @@ def save_chunks(path: Path, chunks: List[DocumentChunk]) -> None:
             file_obj.write("\n")
 
 
+def save_embedding_vectors(
+    path: Path,
+    embeddings: "np.ndarray",
+    ids: List[int],
+) -> None:
+    """Persist raw embedding vectors and ids to disk."""
+
+    if np is None:
+        raise RuntimeError("numpy is required to store embeddings")
+
+    if embeddings.size == 0:
+        LOGGER.warning("No embeddings were provided, skipping save for %s", path)
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        embeddings=embeddings.astype("float32"),
+        ids=np.array(ids, dtype="int64"),
+    )
+    LOGGER.info("Persisted %d vectors to %s", embeddings.shape[0], path)
+
+
+def load_embedding_vectors(path: Path) -> tuple["np.ndarray", List[int]]:
+    """Load previously stored embedding vectors and ids."""
+
+    if np is None:
+        raise RuntimeError("numpy is required to load embeddings")
+
+    if not path.exists():
+        raise FileNotFoundError(f"Embedding store not found at {path}")
+
+    data = np.load(path)
+    embeddings = data["embeddings"].astype("float32")
+    ids = data["ids"].astype("int64").tolist()
+    return embeddings, ids
+
+
 def build_faiss_index(
     embeddings: "np.ndarray",
     ids: List[int],
@@ -282,12 +320,18 @@ def ingest_documents(
                 model=settings.model_embedding_short,
             )
         )
+        short_ids = [chunk.embedding_id for chunk in short_chunk_records]
         build_faiss_index(
             short_embeddings,
-            [chunk.embedding_id for chunk in short_chunk_records],
+            short_ids,
             settings.short_index_dir / "index.faiss",
             settings.faiss_factory,
             settings.faiss_metric,
+        )
+        save_embedding_vectors(
+            settings.short_index_dir / "embeddings.npz",
+            short_embeddings,
+            short_ids,
         )
         save_chunks(settings.short_chunks_path, short_chunk_records)
     else:
@@ -300,12 +344,18 @@ def ingest_documents(
                 model=settings.model_embedding_long,
             )
         )
+        long_ids = [chunk.embedding_id for chunk in long_chunk_records]
         build_faiss_index(
             long_embeddings,
-            [chunk.embedding_id for chunk in long_chunk_records],
+            long_ids,
             settings.long_index_dir / "index.faiss",
             settings.faiss_factory,
             settings.faiss_metric,
+        )
+        save_embedding_vectors(
+            settings.long_index_dir / "embeddings.npz",
+            long_embeddings,
+            long_ids,
         )
         save_chunks(settings.long_chunks_path, long_chunk_records)
     else:
