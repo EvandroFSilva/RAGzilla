@@ -51,6 +51,34 @@ class DocumentChunk:
     embedding_id: int
 
 
+@dataclass
+class IngestionStats:
+    """Track operational metrics for an ingestion execution."""
+
+    drive_files_checked: int = 0
+    new_drive_files: int = 0
+    updated_drive_files: int = 0
+    downloaded_files: int = 0
+    documents_processed: int = 0
+    short_chunks: int = 0
+    long_chunks: int = 0
+
+    def log_summary(self) -> None:
+        """Emit an aggregated view of the ingestion activity."""
+
+        LOGGER.info(
+            "Resumo da ingestão -> verificados: %d, novos: %d, atualizados: %d, "
+            "baixados: %d, lidos: %d, short_chunks: %d, long_chunks: %d",
+            self.drive_files_checked,
+            self.new_drive_files,
+            self.updated_drive_files,
+            self.downloaded_files,
+            self.documents_processed,
+            self.short_chunks,
+            self.long_chunks,
+        )
+
+
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
     """Split text into overlapping chunks."""
 
@@ -280,18 +308,29 @@ def ingest_documents(
 
         settings = get_settings()
     metadata = load_metadata(settings.metadata_path) if not recreate_index else {}
+    stats = IngestionStats()
 
     if drive_client is not None:
         LOGGER.info("Synchronising documents from Google Drive folder %s", drive_client.folder_id)
         drive_files = drive_client.list_pdfs()
+        stats.drive_files_checked = len(drive_files)
         for file_info in drive_files:
+            is_new_file = False
             target_path = source_dir / file_info["name"]
             if target_path.exists():
                 current_md5 = compute_md5(target_path)
                 if current_md5 == file_info.get("md5Checksum"):
                     LOGGER.info("Skipping %s (unchanged)", target_path.name)
                     continue
+            else:
+                is_new_file = True
+
             drive_client.download_file(file_info["id"], target_path)
+            stats.downloaded_files += 1
+            if is_new_file:
+                stats.new_drive_files += 1
+            else:
+                stats.updated_drive_files += 1
 
     embedding_client = embedding_client or OpenAIEmbeddingClient(api_key=settings.openai_api_key)
 
@@ -312,6 +351,9 @@ def ingest_documents(
 
         short_chunk_records.extend(chunks["short"])
         long_chunk_records.extend(chunks["long"])
+        stats.documents_processed += 1
+        stats.short_chunks += len(chunks["short"])
+        stats.long_chunks += len(chunks["long"])
 
     if short_chunk_records:
         short_embeddings = embedding_client.normalize(
@@ -363,6 +405,7 @@ def ingest_documents(
 
     save_metadata(settings.metadata_path, metadata)
     LOGGER.info("Ingestion completed. Metadata stored at %s", settings.metadata_path)
+    stats.log_summary()
 
 
 def cli_sync_drive() -> None:
