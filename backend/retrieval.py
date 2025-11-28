@@ -76,6 +76,8 @@ class DualIndexRetriever:
         if not vector:
             raise ValueError("Query embedding returned no data")
         normalized = self.embedding_client.normalize(vector)
+        if faiss is not None:
+            faiss.normalize_L2(normalized)
         return normalized.astype("float32")
 
     def search_documents(self, query: str, top_k: int = 10) -> List[dict]:

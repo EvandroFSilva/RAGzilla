@@ -36,8 +36,8 @@ class Settings(BaseSettings):
         description="FAISS index factory string (without metric suffix)",
     )
     faiss_metric: str = Field(
-        default="ip",
-        description="Similarity metric: 'ip' (inner product) or 'l2'",
+        default="cosine",
+        description="Similarity metric: cosine via inner product + L2 normalisation",
     )
 
     model_embedding_short: str = Field(default="text-embedding-3-small")

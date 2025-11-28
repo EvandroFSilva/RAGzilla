@@ -303,6 +303,8 @@ def build_faiss_index(
     dimension = embeddings.shape[1]
     base_index = faiss.index_factory(dimension, factory_str, metric_val)
     index = faiss.IndexIDMap(base_index)
+    if metric_val == faiss.METRIC_INNER_PRODUCT:
+        faiss.normalize_L2(embeddings)
     index.add_with_ids(embeddings.astype("float32"), np.array(ids, dtype="int64"))
     faiss.write_index(index, str(index_path))
     LOGGER.info("Persisted %d vectors to %s", embeddings.shape[0], index_path)
