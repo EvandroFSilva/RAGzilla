@@ -47,7 +47,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Execute a ingestão inicial dos documentos:
+3. Execute a ingestão dos documentos (veja as variações do comando abaixo):
 
 ```bash
 python backend/ingestion.py --sync-drive --recreate
@@ -55,7 +55,13 @@ ou
 python -m backend.ingestion --sync-drive --recreate
 ```
 
-O comando irá sincronizar os PDFs do Google Drive, executar OCR quando necessário, criar os chunks curtos/longos, gerar embeddings com o modelo `text-embedding-3-small` e salvar os índices FAISS em `data/faiss_index_short/index.faiss` e `data/faiss_index_long/index.faiss`.
+### Variações do comando
+
+- `python backend/ingestion.py` e `python -m backend.ingestion` executam exatamente a mesma rotina; a segunda forma usa o módulo como entrypoint (útil quando o diretório não está no `PYTHONPATH`).
+- `--sync-drive` sincroniza a pasta configurada do Google Drive antes de qualquer processamento. Sem essa flag, apenas os PDFs que já estiverem em `data/raw` (ou pasta configurada) serão avaliados.
+- `--recreate` força a reconstrução completa dos índices FAISS e dos arquivos `.npz`, ignorando o cache local de embeddings e chunks. Quando omitida, a pipeline roda de forma incremental: apenas PDFs novos ou alterados geram chunks/embeddings e as chamadas ao OpenAI são limitadas a esses arquivos, enquanto os demais são reutilizados diretamente do armazenamento local.
+
+Independentemente da combinação escolhida, o comando irá executar OCR quando necessário, criar os chunks curtos/longos, gerar embeddings com o modelo `text-embedding-3-small` (ou somente para os arquivos novos/alterados) e salvar/atualizar os índices FAISS em `data/faiss_index_short/index.faiss` e `data/faiss_index_long/index.faiss`.
 
 ## Executando a API
 

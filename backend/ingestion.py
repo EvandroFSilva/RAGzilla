@@ -206,6 +206,20 @@ def save_chunks(path: Path, chunks: List[DocumentChunk]) -> None:
             file_obj.write("\n")
 
 
+def load_chunks(path: Path) -> List[DocumentChunk]:
+    """Load previously stored chunk metadata."""
+
+    if not path.exists():
+        return []
+
+    chunks: List[DocumentChunk] = []
+    with path.open("r", encoding="utf-8") as file_obj:
+        for line in file_obj:
+            payload = json.loads(line)
+            chunks.append(DocumentChunk(**payload))
+    return chunks
+
+
 def save_embedding_vectors(
     path: Path,
     embeddings: "np.ndarray",
@@ -332,19 +346,129 @@ def ingest_documents(
             else:
                 stats.updated_drive_files += 1
 
+    document_info: Dict[str, tuple[Path, str]] = {}
+    documents_to_process: List[str] = []
+    for document_path in sorted(source_dir.glob("*.pdf")):
+        document_id = document_path.name
+        file_md5 = compute_md5(document_path)
+        document_info[document_id] = (document_path, file_md5)
+        existing = metadata.get(document_id)
+        should_process = recreate_index or existing is None or existing.get("md5") != file_md5
+        if should_process:
+            documents_to_process.append(document_id)
+        else:
+            LOGGER.info("Skipping %s (no local changes detected)", document_path.name)
+
+    doc_ids_to_refresh = set(documents_to_process)
+
+    reused_short_chunks: List[DocumentChunk] = []
+    reused_long_chunks: List[DocumentChunk] = []
+    reused_short_embeddings: Optional["np.ndarray"] = None
+    reused_long_embeddings: Optional["np.ndarray"] = None
+    reused_short_ids: List[int] = []
+    reused_long_ids: List[int] = []
+
+    force_full_rebuild = False
+
+    if not recreate_index:
+        existing_short_chunks = load_chunks(settings.short_chunks_path)
+        existing_long_chunks = load_chunks(settings.long_chunks_path)
+        short_embeddings_path = settings.short_index_dir / "embeddings.npz"
+        long_embeddings_path = settings.long_index_dir / "embeddings.npz"
+        try:
+            existing_short_embeddings, existing_short_ids = load_embedding_vectors(short_embeddings_path)
+            short_id_to_idx = {emb_id: idx for idx, emb_id in enumerate(existing_short_ids)}
+        except FileNotFoundError:
+            existing_short_embeddings = None
+            short_id_to_idx = {}
+            if existing_short_chunks:
+                LOGGER.warning("Short embedding store not found; forcing full index rebuild.")
+                force_full_rebuild = True
+        try:
+            existing_long_embeddings, existing_long_ids = load_embedding_vectors(long_embeddings_path)
+            long_id_to_idx = {emb_id: idx for idx, emb_id in enumerate(existing_long_ids)}
+        except FileNotFoundError:
+            existing_long_embeddings = None
+            long_id_to_idx = {}
+            if existing_long_chunks:
+                LOGGER.warning("Long embedding store not found; forcing full index rebuild.")
+                force_full_rebuild = True
+
+        short_indexes: List[int] = []
+        for chunk in existing_short_chunks:
+            if chunk.document_id in doc_ids_to_refresh:
+                continue
+            if not short_id_to_idx:
+                continue
+            idx = short_id_to_idx.get(chunk.embedding_id)
+            if idx is None:
+                LOGGER.warning(
+                    "Short embedding id %s missing from store; scheduling %s for reprocessing",
+                    chunk.embedding_id,
+                    chunk.document_id,
+                )
+                if chunk.document_id not in doc_ids_to_refresh:
+                    documents_to_process.append(chunk.document_id)
+                    doc_ids_to_refresh.add(chunk.document_id)
+                continue
+            reused_short_chunks.append(chunk)
+            reused_short_ids.append(chunk.embedding_id)
+            short_indexes.append(idx)
+        if short_indexes and existing_short_embeddings is not None:
+            reused_short_embeddings = existing_short_embeddings[short_indexes]
+
+        long_indexes: List[int] = []
+        for chunk in existing_long_chunks:
+            if chunk.document_id in doc_ids_to_refresh:
+                continue
+            if not long_id_to_idx:
+                continue
+            idx = long_id_to_idx.get(chunk.embedding_id)
+            if idx is None:
+                LOGGER.warning(
+                    "Long embedding id %s missing from store; scheduling %s for reprocessing",
+                    chunk.embedding_id,
+                    chunk.document_id,
+                )
+                if chunk.document_id not in doc_ids_to_refresh:
+                    documents_to_process.append(chunk.document_id)
+                    doc_ids_to_refresh.add(chunk.document_id)
+                continue
+            reused_long_chunks.append(chunk)
+            reused_long_ids.append(chunk.embedding_id)
+            long_indexes.append(idx)
+        if long_indexes and existing_long_embeddings is not None:
+            reused_long_embeddings = existing_long_embeddings[long_indexes]
+
+    if force_full_rebuild:
+        documents_to_process = list(document_info.keys())
+        doc_ids_to_refresh = set(documents_to_process)
+        reused_short_chunks = []
+        reused_long_chunks = []
+        reused_short_ids = []
+        reused_long_ids = []
+        reused_short_embeddings = None
+        reused_long_embeddings = None
+        LOGGER.info("Forcing full ingestion run to rebuild missing artifacts.")
+
+    if not documents_to_process:
+        LOGGER.info("No new or updated documents. Keeping previous embeddings untouched.")
+        stats.log_summary()
+        return
+
     embedding_client = embedding_client or OpenAIEmbeddingClient(api_key=settings.openai_api_key)
 
     short_chunk_records: List[DocumentChunk] = []
     long_chunk_records: List[DocumentChunk] = []
 
-    for document_path in sorted(source_dir.glob("*.pdf")):
+    for document_id in documents_to_process:
+        document_path, file_md5 = document_info[document_id]
         LOGGER.info("Processing %s", document_path.name)
         chunks = extract_document_chunks(document_path, settings)
-        document_id = document_path.name
         document_metadata = {
             "document_id": document_id,
             "name": document_path.name,
-            "md5": compute_md5(document_path),
+            "md5": file_md5,
             "path": str(document_path),
         }
         metadata[document_id] = document_metadata
@@ -355,6 +479,13 @@ def ingest_documents(
         stats.short_chunks += len(chunks["short"])
         stats.long_chunks += len(chunks["long"])
 
+    if reused_short_chunks:
+        LOGGER.info("Reusing %d short chunks from previous runs", len(reused_short_chunks))
+    if reused_long_chunks:
+        LOGGER.info("Reusing %d long chunks from previous runs", len(reused_long_chunks))
+
+    short_embeddings = None
+    short_ids: List[int] = []
     if short_chunk_records:
         short_embeddings = embedding_client.normalize(
             embedding_client.embed_texts(
@@ -363,6 +494,16 @@ def ingest_documents(
             )
         )
         short_ids = [chunk.embedding_id for chunk in short_chunk_records]
+
+    if reused_short_embeddings is not None:
+        short_embeddings = (
+            np.concatenate([reused_short_embeddings, short_embeddings], axis=0)
+            if short_embeddings is not None
+            else reused_short_embeddings
+        )
+        short_ids = reused_short_ids + short_ids
+
+    if short_embeddings is not None and short_ids:
         build_faiss_index(
             short_embeddings,
             short_ids,
@@ -375,10 +516,12 @@ def ingest_documents(
             short_embeddings,
             short_ids,
         )
-        save_chunks(settings.short_chunks_path, short_chunk_records)
+        save_chunks(settings.short_chunks_path, reused_short_chunks + short_chunk_records)
     else:
         LOGGER.warning("No short chunks generated during ingestion")
 
+    long_embeddings = None
+    long_ids: List[int] = []
     if long_chunk_records:
         long_embeddings = embedding_client.normalize(
             embedding_client.embed_texts(
@@ -387,6 +530,16 @@ def ingest_documents(
             )
         )
         long_ids = [chunk.embedding_id for chunk in long_chunk_records]
+
+    if reused_long_embeddings is not None:
+        long_embeddings = (
+            np.concatenate([reused_long_embeddings, long_embeddings], axis=0)
+            if long_embeddings is not None
+            else reused_long_embeddings
+        )
+        long_ids = reused_long_ids + long_ids
+
+    if long_embeddings is not None and long_ids:
         build_faiss_index(
             long_embeddings,
             long_ids,
@@ -399,7 +552,7 @@ def ingest_documents(
             long_embeddings,
             long_ids,
         )
-        save_chunks(settings.long_chunks_path, long_chunk_records)
+        save_chunks(settings.long_chunks_path, reused_long_chunks + long_chunk_records)
     else:
         LOGGER.warning("No long chunks generated during ingestion")
 
