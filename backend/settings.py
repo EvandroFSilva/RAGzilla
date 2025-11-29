@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     short_chunk_size: int = 20
     short_chunk_overlap: int = 5
-    long_chunk_size: int = 500
+    long_chunk_size: int = 600
     long_chunk_overlap: int = 50
 
     faiss_factory: str = Field(
@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     )
 
     model_embedding_short: str = Field(default="text-embedding-3-small")
-    model_embedding_long: str = Field(default="text-embedding-3-small")
+    model_embedding_long: str = Field(default="text-embedding-3-large")
     model_generation: str = Field(default="gpt-4o-mini")
 
     allowed_extensions: List[str] = Field(default_factory=lambda: [".pdf"])
