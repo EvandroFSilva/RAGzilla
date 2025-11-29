@@ -12,7 +12,7 @@ Google Drive --> Ingestão (OCR + chunking curto/long) --> Embeddings OpenAI -->
 
 | Pasta/arquivo | Descrição |
 | ------------- | --------- |
-| `backend/ingestion.py` | Pipeline de ingestão com sincronização do Google Drive, OCR e geração de índices FAISS curtos (20 tokens) e longos (500 tokens). |
+| `backend/ingestion.py` | Pipeline de ingestão com sincronização do Google Drive, OCR e geração de índices FAISS curtos (20 tokens) e longos (600 tokens). |
 | `backend/retrieval.py` | Consulta aos índices FAISS (busca inicial curta + contexto longo para resposta). |
 | `backend/query.py` | Geração de respostas com o modelo `gpt-4o-mini`, garantindo citações das fontes utilizadas. |
 | `backend/main.py` | API FastAPI com endpoints `/health`, `/search` e `/query`. |

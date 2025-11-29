@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
@@ -37,6 +38,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing helper
     from .settings import Settings
 
 LOGGER = get_logger(__name__)
+
+# Regex patterns for Brazilian document identifiers
+CPF_PATTERN = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b|\b\d{11}\b")
+CNPJ_PATTERN = re.compile(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b|\b\d{14}\b")
+RG_PATTERN = re.compile(r"\b\d{1,2}\.\d{3}\.\d{3}-[\dkK]\b|\b\d{7,9}[\dkK]?\b")
 
 
 @dataclass
@@ -123,6 +129,19 @@ def _chunk_identifier(document_id: str, chunk_id: str) -> int:
     return abs(hash(f"{document_id}:{chunk_id}")) % (2**63)
 
 
+def _extract_identifiers(text: str) -> List[str]:
+    """Return CPF, CNPJ and RG matches found in text, preserving order and uniqueness."""
+
+    seen = set()
+    ordered: List[str] = []
+    for pattern in (CNPJ_PATTERN, CPF_PATTERN, RG_PATTERN):
+        for match in pattern.findall(text):
+            if match not in seen:
+                seen.add(match)
+                ordered.append(match)
+    return ordered
+
+
 def extract_document_chunks(path: Path, settings: "Settings") -> Dict[str, List[DocumentChunk]]:
     """Produce short and long chunks for the provided document."""
 
@@ -151,6 +170,21 @@ def extract_document_chunks(path: Path, settings: "Settings") -> Dict[str, List[
                         document_id=path.name,
                         document_name=path.name,
                         text=chunk,
+                        page_number=page_number,
+                        chunk_id=chunk_id,
+                        embedding_id=_chunk_identifier(path.name, chunk_id),
+                    )
+                )
+
+            # Create dedicated chunks for identifiers on the first page
+            identifiers = _extract_identifiers(short_source)
+            for id_idx, identifier in enumerate(identifiers):
+                chunk_id = f"id_{page_number}_{id_idx}"
+                short_chunks.append(
+                    DocumentChunk(
+                        document_id=path.name,
+                        document_name=path.name,
+                        text=identifier,
                         page_number=page_number,
                         chunk_id=chunk_id,
                         embedding_id=_chunk_identifier(path.name, chunk_id),
