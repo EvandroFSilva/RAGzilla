@@ -9,3 +9,5 @@ data/*
 .DS_Store
 frontend/node_modules/
 .faiss*
+project/data
+project/src/vector_index
