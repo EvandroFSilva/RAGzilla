@@ -4,7 +4,6 @@ __pycache__/
 .env.*
 *.log
 data/
-!data/.gitkeep
 .venv/
 .DS_Store
 frontend/node_modules/
