@@ -3,7 +3,7 @@ __pycache__/
 .env
 .env.*
 *.log
-data/*
+data/
 !data/.gitkeep
 .venv/
 .DS_Store
